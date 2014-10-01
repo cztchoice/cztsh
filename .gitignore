@@ -1,0 +1,3 @@
+*.o
+loop.cpp
+.DS_Store
