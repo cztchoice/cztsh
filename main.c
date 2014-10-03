@@ -13,6 +13,7 @@
 #include <sys/wait.h>
 #include <paths.h>
 #include <termios.h>
+#include <assert.h>
 
 
 #ifndef MAX_LINE
@@ -62,7 +63,7 @@ int getTokens(char *line, char **tokens){
 }
 
 static char *BuiltinCommand[ BUILTIN_COMMAND_NUM ] = {
-    "", //address start in 1
+    "",
     "alias",
     "bind",
     "builtin",
@@ -85,28 +86,32 @@ static char *BuiltinCommand[ BUILTIN_COMMAND_NUM ] = {
     "typeset",
     "ulimit",
     "unalias",
-    "" //The end of BuiltinCommands
+    ""//The end of BuiltinCommands
 };
 
 int isBuiltinCommand(char *str){
     int i = 1;
-    while(strcmp(BuiltinCommand[i], str) != 0){
-        if(strcmp(BuiltinCommand[i], "") == 0){
-            return 0;
+    while(strcmp(BuiltinCommand[i], "") != 0){
+        if(strcmp(BuiltinCommand[i], str) == 0){
+            return i;
         }
         i++;
     }
-    return i;
+    return 0;
 }
 
 int handleBuiltin(char **tokens){
+    printf("In Handle Builtin...\n");
     int status;
-    if(strcmp(*tokens, "fg") == 0){
+    if(strcmp(tokens[0], "fg") == 0){
         //Don't deal with process in signal handler funtion!
+        int pid = atoi(tokens[1]);
+        int pgid = getpgid(pid);
+        printf("pid: %d, pgid: %d\n", pid, pgid);
+        killpg(pgid, SIGCONT);
+        tcsetpgrp (shell_tty, pgid);
         
-        kill(atoi(tokens[1]), SIGCONT);
-        //tcsetpgrp (shell_terminal, atoi(tokens[1]));
-        waitpid (atoi(tokens[1]), &status, 0);
+        waitpid (pid, &status, 0);
     }
     printf("builtin handling....\n");
     return 0;
@@ -117,6 +122,7 @@ int handleExec(char **tokens){
     //     printf("%s\n", *it);
     //     it++;
     // }
+    printf("In Handle Exec...\n");
     pid_t pid;
     pid_t pgid;
     int status;
@@ -126,12 +132,14 @@ int handleExec(char **tokens){
     }
     else if(0 == pid){
         pgid = getpid();
-        // if (setpgid(pgid, pgid) < 0){
-        //     err_sys("setpgid error");
-        // }
-        // if (tcsetpgrp(shell_tty, pgid) < 0){
-        //     err_sys("tcsetpgrp error");
-        // }
+        printf("%d\n", pgid);
+        if (setpgid(pgid, pgid) < 0){
+            err_sys("setpgid error");
+        }
+        printf("pid: %d, pgid: %d, pgrp: %d\n", getpid(), getpgid(0), getpgrp());
+        if (tcsetpgrp(shell_tty, pgid) < 0){
+            err_sys("tcsetpgrp error");
+        }
 
         signal (SIGINT, SIG_DFL);
         signal (SIGQUIT, SIG_DFL);
@@ -146,13 +154,13 @@ int handleExec(char **tokens){
 
     }
     else{
-        // setpgid(pid, pid);
-        // tcsetpgrp(shell_tty, pid);
+        setpgid(pid, pid);
+        tcsetpgrp(shell_tty, pid);
 
         printf("child pid: %d\n", pid);
         waitpid(pid, &status, 0);
 
-        // tcsetpgrp(shell_tty, getpid());
+        tcsetpgrp(shell_tty, getpid());
     }
     return 0;
 }
@@ -165,54 +173,7 @@ void print_info(char *str, siginfo_t *info)
 void sh_sig_handler(int signum, siginfo_t *info, void *context)
 {
     printf("%s\n", strsignal(signum));
-    // int status;
-    if (signum == SIGCHLD)
-    {
-        if(info->si_errno != 0){
-            fprintf(stderr, "SIG_CHLD error: %s\n", strerror(info->si_errno));
-        }
-        switch (info->si_code){
-        case CLD_STOPPED:
-            // if(0 == sh_back_grp){
-            //     sh_back_grp = info->si_pid;
-            // }
-            //setpgid(0, getpid());
-            //tcsetpgrp(shell_tty, getpid());
-            print_info("CLD_STOPPED", info);
-            break;
-        case CLD_CONTINUED:
-            //here we need to set shell to continued wait for child process
-            //出现问题：我waitpid之后 在vim里的响应依然很慢，感觉有另一个进程在和它争夺控制权一样
-            //不应该在signal handler里进行handle？
-            // setpgid(info->si_pid, info->si_pid);
-            // tcsetpgrp(shell_tty, info->si_pid);
-            // killpg(info->si_pid, SIGCONT);
-            // tcsetprgp(STDIN_FILENO, )
-            //waitpid(info->si_pid, &status, 0);
-            
-            print_info("CLD_CONTINUED", info);
-            break;
-        case CLD_EXITED:
-            print_info("CLD_EXITED", info);
-            break;
-        case CLD_TRAPPED:
-            print_info("CLD_TRAPPED", info);
-            break;
-        case CLD_KILLED:
-            print_info("CLD_KILLED", info);
-            break;
-        case CLD_DUMPED:
-            print_info("CLD_DUMPED", info);
-            break;
-        default:
-            //si_code = CLD_EXITED, CLD_KILLED, CLD_DUMPED, CLD_TRAPPED
-            printf("%d\n", info->si_code);
-            print_info("SIGCHLD Others", info);
-            break;
-        }  
-        
-    }
-    else if (signum == SIGINT)
+    if (signum == SIGINT)
     {   
         //printf("%d\n",signum);        
         printf("Received SIGINT, ignore ... \n");
@@ -237,6 +198,56 @@ void sh_sig_handler(int signum, siginfo_t *info, void *context)
     siglongjmp(sh_signal_jmpbuf, 1);
 }
 
+void sh_sig_chld_handler(int signum, siginfo_t *info, void *context)
+{
+    //chld handler 不需要跳转？
+    printf("%s\n", strsignal(signum));
+    // int status;
+    assert (signum == SIGCHLD);
+    if(info->si_errno != 0){
+        fprintf(stderr, "SIG_CHLD error: %s\n", strerror(info->si_errno));
+    }
+    switch (info->si_code){
+    case CLD_STOPPED:
+        // if(0 == sh_back_grp){
+        //     sh_back_grp = info->si_pid;
+        // }
+        //setpgid(0, getpid());
+        //tcsetpgrp(shell_tty, getpid());
+        print_info("CLD_STOPPED", info);
+        break;
+    case CLD_CONTINUED:
+        //here we need to set shell to continued wait for child process
+        //出现问题：我waitpid之后 在vim里的响应依然很慢，感觉有另一个进程在和它争夺控制权一样
+        //不应该在signal handler里进行handle？
+        // setpgid(info->si_pid, info->si_pid);
+        // tcsetpgrp(shell_tty, info->si_pid);
+        // killpg(info->si_pid, SIGCONT);
+        // tcsetprgp(STDIN_FILENO, )
+        //waitpid(info->si_pid, &status, 0);
+        
+        print_info("CLD_CONTINUED", info);
+        break;
+    case CLD_EXITED:
+        print_info("CLD_EXITED", info);
+        break;
+    case CLD_TRAPPED:
+        print_info("CLD_TRAPPED", info);
+        break;
+    case CLD_KILLED:
+        print_info("CLD_KILLED", info);
+        break;
+    case CLD_DUMPED:
+        print_info("CLD_DUMPED", info);
+        break;
+    default:
+        //si_code = CLD_EXITED, CLD_KILLED, CLD_DUMPED, CLD_TRAPPED
+        printf("%d\n", info->si_code);
+        print_info("SIGCHLD Others", info);
+        break;
+    }
+}
+
 int main(int argc, char const *argv[])
 {
     sh_id = getpgid (0);
@@ -251,8 +262,10 @@ int main(int argc, char const *argv[])
     }
     tcsetpgrp(shell_tty, sh_id); 
 
+    printf("pid: %d, pgid: %d\n", getpid(), getpgrp());
+
     // Set shell signal action
-    struct sigaction new_action, old_action;
+    struct sigaction new_action, old_action, chld_action;
     // action.sa_handler = sh_sig_handler;
     new_action.sa_sigaction = sh_sig_handler;
     sigemptyset(&(new_action.sa_mask));
@@ -267,8 +280,9 @@ int main(int argc, char const *argv[])
     //这是 job control的内容，需要自己再了解下
     //http://stackoverflow.com/questions/11821378/what-does-bashno-job-control-in-this-shell-mean
     //http://www.opensource.apple.com/source/bash/bash-80/bash/jobs.c?c
+    
     sigaction(SIGTSTP, &new_action, &old_action);
-    sigaction(SIGCHLD, &new_action, &old_action);
+    
 
     //when shell is in the background process group
     // sigaction(SIGTTIN, &new_action, &old_action);
@@ -276,13 +290,19 @@ int main(int argc, char const *argv[])
     signal(SIGTTIN, SIG_IGN);
     signal(SIGTTOU, SIG_IGN);
 
+    chld_action.sa_sigaction = sh_sig_chld_handler;
+    sigemptyset(&(chld_action.sa_mask));
+    chld_action.sa_flags = 0;
+    chld_action.sa_flags |= SA_SIGINFO;
+    sigaction(SIGCHLD, &chld_action, NULL);
+
     // This code is from
     // https://github.com/perusio/linux-programming-by-example/blob/master/book/ch10/ch10-status.c
-    
-    sigset_t childset;
-    sigemptyset(& childset);
-    sigaddset(& childset, SIGCHLD);
-    sigprocmask(SIG_SETMASK, & childset, NULL);
+    // block the CHLD signal
+    // sigset_t childset;
+    // sigemptyset(& childset);
+    // sigaddset(& childset, SIGCHLD);
+    // sigprocmask(SIG_SETMASK, & childset, NULL);
 
     FILE *fp = stdin;
     char *line = (char *)malloc(MAX_LINE + 1);
@@ -301,10 +321,14 @@ int main(int argc, char const *argv[])
         }
 
         if(isBuiltinCommand(tokens[0])){
-            handleBuiltin(tokens);
+            if(handleBuiltin(tokens) == -1){
+                err_sys("handleBuiltin error");
+            }
         }
         else{
-            handleExec(tokens);
+            if( handleExec(tokens) == -1){
+                err_sys("handleExec error");
+            }
         }
     }
 
